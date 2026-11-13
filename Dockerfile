@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HOST=0.0.0.0 \
-    PORT=8000 \
+    PORT=8080 \
     MCP_TRANSPORT=http \
     MCP_STATELESS_HTTP=true \
     NOLGA_API_KEYS_FILE=/data/api_keys.json
@@ -22,6 +22,6 @@ RUN useradd --create-home --uid 1000 nolga \
 USER nolga
 
 VOLUME ["/data"]
-EXPOSE 8000
+EXPOSE 8080
 
 CMD ["python", "server.py"]
