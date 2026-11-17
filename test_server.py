@@ -1,5 +1,7 @@
+import json
+
 import pytest
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 import server
 from server import mcp, _key_from_headers
 
@@ -232,3 +234,100 @@ def test_update_work_summary(monkeypatch):
     assert captured["path"] == "/api/works/work_1"
     assert captured["payload"] == {"summary": "new summary"}
     assert '"edited"' in result
+
+
+def test_create_work_moves_long_summary_to_request(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    captured = {}
+
+    def fake_request(method, path, api_key, payload=None):
+        captured["payload"] = payload
+        return 201, {"id": "work_9", "summary": payload["summary"]}
+
+    monkeypatch.setattr(server, "_backend_request", fake_request)
+    long_summary = "가" * 300
+    result = server.create_work("t", long_summary)
+    payload = captured["payload"]
+    assert len(payload["summary"]) <= server.MAX_SUMMARY_LEN
+    assert payload["request"] == long_summary
+    assert '"_note"' in result
+
+
+def test_create_work_appends_long_summary_to_existing_request(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    captured = {}
+
+    def fake_request(method, path, api_key, payload=None):
+        captured["payload"] = payload
+        return 201, {"id": "work_9"}
+
+    monkeypatch.setattr(server, "_backend_request", fake_request)
+    long_summary = "나" * 300
+    server.create_work("t", long_summary, request="기존 요청 내용")
+    payload = captured["payload"]
+    assert payload["request"].startswith("기존 요청 내용")
+    assert long_summary in payload["request"]
+    assert len(payload["summary"]) <= server.MAX_SUMMARY_LEN
+
+
+def test_create_work_parses_json_string_lists(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    captured = {}
+
+    def fake_request(method, path, api_key, payload=None):
+        captured["payload"] = payload
+        return 201, {"id": "work_9"}
+
+    monkeypatch.setattr(server, "_backend_request", fake_request)
+    changes = json.dumps(
+        [{"path": "a.py", "type": "added", "additions": "3", "deletions": 0}]
+    )
+    sources = json.dumps([{"type": "commit", "title": "abc t"}])
+    server.create_work("t", "s", changes=changes, sources=sources)
+    payload = captured["payload"]
+    assert payload["changes"] == [
+        {"path": "a.py", "type": "added", "additions": 3, "deletions": 0}
+    ]
+    assert payload["sources"] == [{"type": "commit", "title": "abc t"}]
+
+
+def test_create_work_rejects_bad_change_type(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    monkeypatch.setattr(
+        server,
+        "_backend_request",
+        lambda *args, **kwargs: pytest.fail("backend must not be called"),
+    )
+    result = server.create_work(
+        "t", "s", changes=[{"path": "a", "type": "renamed"}]
+    )
+    assert "Invalid work payload" in result
+    assert "type must be one of" in result
+
+
+def test_create_work_500_hint(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    monkeypatch.setattr(
+        server,
+        "_backend_request",
+        lambda *args, **kwargs: (500, {"detail": "Internal Server Error"}),
+    )
+    result = server.create_work("t", "s")
+    assert "HTTP 500" in result
+    assert "short summary" in result
+
+
+def test_work_registration_guide_tool():
+    text = server.work_registration_guide()
+    assert "summary" in text
+    assert "request" in text
+    assert "changes" in text
+
+
+@pytest.mark.asyncio
+async def test_work_guide_prompt():
+    async with Client(mcp) as client:
+        prompts = await client.list_prompts()
+        assert any(prompt.name == "nolga_work_guide" for prompt in prompts)
+        result = await client.get_prompt("nolga_work_guide", {})
+        assert "255" in result.messages[0].content.text
