@@ -2,9 +2,17 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 import json
 import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 mcp = FastMCP("nolga-mcp")
+
+BACKEND_BASE_URL = os.getenv(
+    "NOLGA_BACKEND_URL", "https://nolga-backend-develop.onrender.com"
+).rstrip("/")
+BACKEND_TIMEOUT = int(os.getenv("NOLGA_BACKEND_TIMEOUT", "60"))
+
 
 # Store API keys in a local file. Override the location with NOLGA_API_KEYS_FILE
 # (e.g. point it at a mounted volume when running in a container).
@@ -73,6 +81,44 @@ def _resolve_api_key():
     return _key_from_headers(request.headers)
 
 
+def _backend_request(method, path, api_key, payload=None):
+    """Send a request to the nolga backend using the caller's API key.
+
+    Returns a tuple of (status_code, parsed_body). Error responses are
+    returned instead of raised so tools can report them back to the client.
+    """
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        f"{BACKEND_BASE_URL}{path}", data=data, method=method
+    )
+    request.add_header("Accept", "application/json")
+    request.add_header("X-API-Key", api_key)
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+
+    try:
+        with urllib.request.urlopen(request, timeout=BACKEND_TIMEOUT) as response:
+            body = response.read().decode("utf-8")
+            return response.status, json.loads(body) if body else None
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8")
+        try:
+            parsed = json.loads(body) if body else None
+        except json.JSONDecodeError:
+            parsed = {"detail": body}
+        return error.code, parsed
+    except OSError as error:
+        reason = getattr(error, "reason", error)
+        return 0, {"detail": f"Backend unreachable: {reason}"}
+
+
+def _format_backend_error(status, body):
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if not detail:
+        detail = json.dumps(body, ensure_ascii=False) if body else "no response body"
+    return f"Backend request failed (HTTP {status}): {detail}"
+
+
 @mcp.tool
 def hello(name: str) -> str:
     """Say hello to someone."""
@@ -106,6 +152,51 @@ def whoami() -> str:
         )
     suffix = api_key[-4:] if len(api_key) >= 4 else "****"
     return f"Backend API key configured (ending in {suffix})."
+
+
+@mcp.tool
+def register_api_key(name: str) -> str:
+    """Create a new backend API key for the calling client.
+
+    Uses the client's current key (from the MCP connection headers) to
+    authenticate against the backend, then returns the newly created key.
+    """
+    api_key = _resolve_api_key()
+    if not api_key:
+        return (
+            "No backend API key. Configure 'Authorization: Bearer <key>' in "
+            "this client's MCP server headers."
+        )
+
+    status, body = _backend_request("POST", "/api-keys", api_key, {"name": name})
+    if status == 201 and isinstance(body, dict) and body.get("api_key"):
+        return (
+            f"API key registered: {body['api_key']}\n"
+            f"id={body.get('id')} name={body.get('name')} "
+            f"expires_at={body.get('expires_at')}\n"
+            "Store this key now. It will not be shown again."
+        )
+    return _format_backend_error(status, body)
+
+
+@mcp.tool
+def verify_api_key(api_key: str | None = None) -> str:
+    """Verify an API key against the backend.
+
+    When api_key is omitted, the calling client's key from the MCP connection
+    headers is verified.
+    """
+    key = api_key or _resolve_api_key()
+    if not key:
+        return (
+            "No API key to verify. Pass api_key or configure "
+            "'Authorization: Bearer <key>' in this client's MCP server headers."
+        )
+
+    status, body = _backend_request("GET", "/api-keys/verify", key)
+    if status == 200 and isinstance(body, dict) and body.get("valid"):
+        return f"API key is valid (api_key_id={body.get('api_key_id')})."
+    return _format_backend_error(status, body)
 
 
 def _env_bool(name, default=False):

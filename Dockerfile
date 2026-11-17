@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
     MCP_TRANSPORT=http \
     MCP_STATELESS_HTTP=true \
+    NOLGA_BACKEND_URL=https://nolga-backend-develop.onrender.com \
     NOLGA_API_KEYS_FILE=/data/api_keys.json
 
 WORKDIR /app
