@@ -3,6 +3,7 @@ from fastmcp.server.dependencies import get_http_request
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -114,9 +115,23 @@ def _backend_request(method, path, api_key, payload=None):
 
 def _format_backend_error(status, body):
     detail = body.get("detail") if isinstance(body, dict) else None
+    if detail is None and body is not None:
+        detail = body
+    if isinstance(detail, (dict, list)):
+        detail = json.dumps(detail, ensure_ascii=False)
     if not detail:
-        detail = json.dumps(body, ensure_ascii=False) if body else "no response body"
+        detail = "no response body"
     return f"Backend request failed (HTTP {status}): {detail}"
+
+
+def _pretty(body):
+    return json.dumps(body, ensure_ascii=False, indent=2, default=str)
+
+
+_NO_KEY_MESSAGE = (
+    "No backend API key. Configure 'Authorization: Bearer <key>' in "
+    "this client's MCP server headers."
+)
 
 
 @mcp.tool
@@ -146,10 +161,7 @@ def whoami() -> str:
     """
     api_key = _resolve_api_key()
     if not api_key:
-        return (
-            "No backend API key. Configure 'Authorization: Bearer <key>' in "
-            "this client's MCP server headers."
-        )
+        return _NO_KEY_MESSAGE
     suffix = api_key[-4:] if len(api_key) >= 4 else "****"
     return f"Backend API key configured (ending in {suffix})."
 
@@ -163,10 +175,7 @@ def register_api_key(name: str) -> str:
     """
     api_key = _resolve_api_key()
     if not api_key:
-        return (
-            "No backend API key. Configure 'Authorization: Bearer <key>' in "
-            "this client's MCP server headers."
-        )
+        return _NO_KEY_MESSAGE
 
     status, body = _backend_request("POST", "/api-keys", api_key, {"name": name})
     if status == 201 and isinstance(body, dict) and body.get("api_key"):
@@ -197,6 +206,124 @@ def verify_api_key(api_key: str | None = None) -> str:
     if status == 200 and isinstance(body, dict) and body.get("valid"):
         return f"API key is valid (api_key_id={body.get('api_key_id')})."
     return _format_backend_error(status, body)
+
+
+VALID_WORK_STATUSES = ("auto", "review", "edited")
+
+
+@mcp.tool
+def create_work(
+    title: str,
+    summary: str,
+    status: str = "auto",
+    repository: str | None = None,
+    branch: str | None = None,
+    request: str | None = None,
+    style_name: str | None = None,
+    changes: list[dict] | None = None,
+    sources: list[dict] | None = None,
+) -> str:
+    """Register a work item on the Nolga backend.
+
+    `summary` may contain Markdown (for example a long handover document).
+    `changes` items look like {"path": "src/a.py", "type": "modified",
+    "additions": 1, "deletions": 0}. `sources` items look like
+    {"type": "commit", "title": "abc123 message"}.
+    """
+    if status not in VALID_WORK_STATUSES:
+        return (
+            f"Invalid status {status!r}; expected one of "
+            f"{', '.join(VALID_WORK_STATUSES)}."
+        )
+    api_key = _resolve_api_key()
+    if not api_key:
+        return _NO_KEY_MESSAGE
+
+    payload = {
+        "title": title,
+        "summary": summary,
+        "status": status,
+        "repository": repository,
+        "branch": branch,
+        "request": request,
+        "styleName": style_name,
+    }
+    if changes:
+        payload["changes"] = changes
+    if sources:
+        payload["sources"] = sources
+
+    status_code, body = _backend_request("POST", "/api/works", api_key, payload)
+    if status_code == 201:
+        return _pretty(body)
+    return _format_backend_error(status_code, body)
+
+
+@mcp.tool
+def list_works(
+    page: int = 1,
+    size: int = 20,
+    q: str | None = None,
+    status: str | None = None,
+    repository: str | None = None,
+    author: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+) -> str:
+    """List work items, newest first. Supports paging, search and filters."""
+    api_key = _resolve_api_key()
+    if not api_key:
+        return _NO_KEY_MESSAGE
+
+    params = {
+        "page": page,
+        "size": size,
+        "q": q,
+        "status": status,
+        "repository": repository,
+        "author": author,
+        "created_from": created_from,
+        "created_to": created_to,
+    }
+    query = urllib.parse.urlencode(
+        {key: value for key, value in params.items() if value is not None}
+    )
+    path = f"/api/works?{query}" if query else "/api/works"
+
+    status_code, body = _backend_request("GET", path, api_key)
+    if status_code == 200:
+        return _pretty(body)
+    return _format_backend_error(status_code, body)
+
+
+@mcp.tool
+def get_work(work_id: str) -> str:
+    """Fetch a single work item, including its changes and sources."""
+    api_key = _resolve_api_key()
+    if not api_key:
+        return _NO_KEY_MESSAGE
+
+    encoded = urllib.parse.quote(work_id, safe="")
+    status_code, body = _backend_request("GET", f"/api/works/{encoded}", api_key)
+    if status_code == 200:
+        return _pretty(body)
+    return _format_backend_error(status_code, body)
+
+
+@mcp.tool
+def update_work_summary(work_id: str, summary: str) -> str:
+    """Update a work's summary. The backend marks the work as 'edited'."""
+    api_key = _resolve_api_key()
+    if not api_key:
+        return _NO_KEY_MESSAGE
+
+    encoded = urllib.parse.quote(work_id, safe="")
+    status_code, body = _backend_request(
+        "PATCH", f"/api/works/{encoded}", api_key, {"summary": summary}
+    )
+    if status_code == 200:
+        return _pretty(body)
+    return _format_backend_error(status_code, body)
 
 
 def _env_bool(name, default=False):

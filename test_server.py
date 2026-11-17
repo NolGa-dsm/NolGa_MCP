@@ -113,3 +113,122 @@ def test_verify_api_key_invalid(monkeypatch):
 def test_verify_api_key_without_any_key(monkeypatch):
     monkeypatch.setattr(server, "_resolve_api_key", lambda: None)
     assert "No API key to verify" in server.verify_api_key()
+
+def test_create_work_success(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    captured = {}
+
+    def fake_request(method, path, api_key, payload=None):
+        captured.update(method=method, path=path, api_key=api_key, payload=payload)
+        return 201, {"id": "work_1", "title": "t", "status": "auto"}
+
+    monkeypatch.setattr(server, "_backend_request", fake_request)
+    result = server.create_work(
+        "t",
+        "long **markdown** summary",
+        repository="NolGa-dsm/NolGa_MCP",
+        branch="main",
+        changes=[{"path": "a.py", "type": "added", "additions": 1, "deletions": 0}],
+        sources=[{"type": "commit", "title": "abc123 t"}],
+    )
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/works"
+    payload = captured["payload"]
+    assert payload["title"] == "t"
+    assert payload["summary"] == "long **markdown** summary"
+    assert payload["styleName"] is None
+    assert payload["changes"][0]["path"] == "a.py"
+    assert payload["sources"][0]["type"] == "commit"
+    assert '"work_1"' in result
+
+
+def test_create_work_invalid_status(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_backend_request",
+        lambda *args, **kwargs: pytest.fail("backend must not be called"),
+    )
+    assert "Invalid status" in server.create_work("t", "s", status="done")
+
+
+def test_create_work_without_key(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: None)
+    assert "No backend API key" in server.create_work("t", "s")
+
+
+def test_create_work_backend_validation_error(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    monkeypatch.setattr(
+        server,
+        "_backend_request",
+        lambda *args, **kwargs: (
+            422,
+            {"detail": [{"loc": ["body", "title"], "msg": "Field required", "type": "missing"}]},
+        ),
+    )
+    result = server.create_work("t", "s")
+    assert "HTTP 422" in result
+    assert "Field required" in result
+
+
+def test_list_works_builds_query(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    captured = {}
+
+    def fake_request(method, path, api_key, payload=None):
+        captured.update(method=method, path=path)
+        return 200, [{"id": "work_1"}]
+
+    monkeypatch.setattr(server, "_backend_request", fake_request)
+    result = server.list_works(page=2, size=5, q="mcp", status="auto")
+    assert captured["method"] == "GET"
+    path = captured["path"]
+    assert path.startswith("/api/works?")
+    assert "page=2" in path
+    assert "size=5" in path
+    assert "q=mcp" in path
+    assert "status=auto" in path
+    assert "work_1" in result
+
+
+def test_list_works_without_key(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: None)
+    assert "No backend API key" in server.list_works()
+
+
+def test_get_work_encodes_id(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    captured = {}
+
+    def fake_request(method, path, api_key, payload=None):
+        captured.update(method=method, path=path)
+        return 200, {"id": "work_1", "summary": "s"}
+
+    monkeypatch.setattr(server, "_backend_request", fake_request)
+    result = server.get_work("work_1")
+    assert captured["path"] == "/api/works/work_1"
+    assert '"work_1"' in result
+
+
+def test_get_work_not_found(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    monkeypatch.setattr(
+        server, "_backend_request", lambda *args, **kwargs: (404, {"detail": "Work not found"})
+    )
+    assert "HTTP 404" in server.get_work("work_missing")
+
+
+def test_update_work_summary(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    captured = {}
+
+    def fake_request(method, path, api_key, payload=None):
+        captured.update(method=method, path=path, payload=payload)
+        return 200, {"id": "work_1", "status": "edited"}
+
+    monkeypatch.setattr(server, "_backend_request", fake_request)
+    result = server.update_work_summary("work_1", "new summary")
+    assert captured["method"] == "PATCH"
+    assert captured["path"] == "/api/works/work_1"
+    assert captured["payload"] == {"summary": "new summary"}
+    assert '"edited"' in result
