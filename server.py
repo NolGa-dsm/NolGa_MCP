@@ -343,6 +343,18 @@ def create_work(
     if not api_key:
         return _NO_KEY_MESSAGE
 
+    for field, value, limit in (
+        ("title", title, 255),
+        ("repository", repository, 255),
+        ("branch", branch, 255),
+        ("style_name", style_name, 100),
+    ):
+        if value is not None and len(str(value)) > limit:
+            return (
+                f"Invalid work payload: {field} must be {limit} characters "
+                "or fewer."
+            )
+
     try:
         normalized_changes = _normalize_changes(changes)
         normalized_sources = _normalize_sources(sources)
@@ -433,7 +445,17 @@ def get_work(work_id: str) -> str:
 
 @mcp.tool
 def update_work_summary(work_id: str, summary: str) -> str:
-    """Update a work's summary. The backend marks the work as 'edited'."""
+    """Update a work's summary. The backend marks the work as 'edited'.
+
+    The backend stores summary as VARCHAR(255), so longer text is rejected
+    here instead of causing an HTTP 500.
+    """
+    if len(summary) > MAX_SUMMARY_LEN:
+        return (
+            f"summary must be {MAX_SUMMARY_LEN} characters or fewer "
+            "(backend column limit). Keep summaries short; long documents "
+            "belong in request when creating a work."
+        )
     api_key = _resolve_api_key()
     if not api_key:
         return _NO_KEY_MESSAGE

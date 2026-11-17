@@ -331,3 +331,24 @@ async def test_work_guide_prompt():
         assert any(prompt.name == "nolga_work_guide" for prompt in prompts)
         result = await client.get_prompt("nolga_work_guide", {})
         assert "255" in result.messages[0].content.text
+
+
+def test_update_work_summary_rejects_too_long(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_backend_request",
+        lambda *args, **kwargs: pytest.fail("backend must not be called"),
+    )
+    result = server.update_work_summary("work_1", "가" * 300)
+    assert "255" in result
+
+
+def test_create_work_rejects_long_title(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: "nlk_x_y")
+    monkeypatch.setattr(
+        server,
+        "_backend_request",
+        lambda *args, **kwargs: pytest.fail("backend must not be called"),
+    )
+    result = server.create_work("x" * 256, "s")
+    assert "title must be 255" in result
